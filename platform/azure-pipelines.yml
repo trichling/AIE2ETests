@@ -1,0 +1,121 @@
+# LLM-gesteuerte E2E-Tests, in derselben Pipeline wie der Funktionscode.
+#
+# Bewusst eine eigene Stage: LLM-Tests haben eine andere Flakiness-Charakteristik
+# als Unit-Tests. Vermischt verwässern sie die Flaky-Statistik.
+
+trigger:
+  branches:
+    include: [main]
+
+variables:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+stages:
+
+  - stage: E2E
+    variables:
+      - group: 'e2e-secrets'          # copilotToken, e2eUser, e2ePassword
+      - name: resultDir
+        value: '$(Build.ArtifactStagingDirectory)/e2e'
+    jobs:
+      - job: LlmE2E
+        timeoutInMinutes: 90
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        # Anzahl der Tests die parallel ausgeführt werden sollen.
+        strategy:
+          parallel: 1
+
+        steps:
+          - task: UseDotNet@2
+            displayName: '.NET 10 SDK'
+            inputs:
+              version: '10.x'
+
+          - script: npm install -g @github/copilot@latest
+            displayName: 'Copilot CLI installieren'
+
+          # Playwright-Version wird aus der Abhängigkeit von @playwright/mcp@latest
+          # abgeleitet, damit Browser und MCP-Server immer zusammenpassen.
+          - bash: |
+              set -e
+              PW_VERSION=$(npm view @playwright/mcp@latest dependencies.playwright)
+              echo "Playwright $PW_VERSION"
+              npx -y "playwright@$PW_VERSION" install --with-deps chromium \
+                || npx -y "playwright@$PW_VERSION" install chromium
+            displayName: 'Chromium bereitstellen'
+
+          - pwsh: |
+              $configDir = Join-Path $HOME '.copilot'
+              New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+              Copy-Item `
+                -LiteralPath './platform/.copilot/mcp-config.json' `
+                -Destination (Join-Path $configDir 'mcp-config.json')
+
+              copilot --version
+              if ($LASTEXITCODE -ne 0) { throw 'Copilot CLI version check failed.' }
+
+              copilot mcp list
+              if ($LASTEXITCODE -ne 0) { throw 'MCP configuration listing failed.' }
+
+              copilot mcp get playwright
+              if ($LASTEXITCODE -ne 0) { throw 'Playwright MCP configuration not found.' }
+
+              # Die CLI hat kein 'agent list'; ein unbekannter Agent bricht ohne Modellaufruf ab
+              # und nennt dabei alle geladenen Agenten ("No such agent: x, available: a, b").
+              $probe = copilot --add-dir ./platform --agent '__probe__' -p 'x' --no-color 2>&1 | Out-String
+              if ($probe -notmatch 'available:.*\be2e-runner\b') { throw "Agent 'e2e-runner' nicht geladen:`n$probe" }
+
+              # Startet den MCP-Server wirklich: ein unbekannter CLI-Parameter lässt ihn
+              # sofort beenden, der Agent hat dann still keine Playwright-Tools.
+              $cfg = (Get-Content -Raw './platform/.copilot/mcp-config.json' | ConvertFrom-Json).mcpServers.playwright
+              $env:E2E_EVIDENCE_DIR = Join-Path ([IO.Path]::GetTempPath()) 'mcp-smoke'
+              New-Item -ItemType Directory -Path $env:E2E_EVIDENCE_DIR -Force | Out-Null
+              $env:E2E_SECRETS_FILE = Join-Path $env:E2E_EVIDENCE_DIR 'empty.env'
+              New-Item -ItemType File -Path $env:E2E_SECRETS_FILE -Force | Out-Null
+              $mcpArgs = $cfg.args | ForEach-Object { [regex]::Replace($_, '\$\{(\w+)\}', { param($m) [Environment]::GetEnvironmentVariable($m.Groups[1].Value) }) }
+              $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}'
+              $out = $init | & $cfg.command @mcpArgs 2>&1 | Out-String
+              if ($out -notmatch '"serverInfo"') { throw "Playwright MCP startet nicht:`n$out" }
+            displayName: 'Agent und MCP-Server prüfen'
+            env:
+              COPILOT_GITHUB_TOKEN: $(copilotToken)
+
+          - pwsh: |
+              ./platform/tools/Invoke-TestSuite.ps1 `
+                -OutDir "$(resultDir)" `
+                -SpecDir "./tests/specs" `
+                -Slice $(System.JobPositionInPhase) `
+                -SliceCount $(System.TotalJobsInPhase)
+            displayName: 'E2E ausführen'
+            # Fehlgeschlagene Tests dürfen den Report-Schritt nicht verhindern.
+            continueOnError: true
+            env:
+              COPILOT_GITHUB_TOKEN: $(copilotToken)
+              BASE_URL: 'https://mein.apetito.de'
+              E2E_USER: $(e2eUser)
+              E2E_PASSWORD: $(e2ePassword)
+
+          - script: dotnet run ./platform/tools/junit.cs -- --in "$(resultDir)"
+            displayName: 'JUnit-XML erzeugen'
+            condition: succeededOrFailed()
+
+          # Ab hier sehen die Ergebnisse aus wie Unit-Tests: Tests-Tab, Historie,
+          # Flaky-Erkennung, Fehlermeldung und Screenshots am Testfall.
+          - task: PublishTestResults@2
+            displayName: 'Testergebnisse veröffentlichen'
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '$(resultDir)/junit.xml'
+              mergeTestResults: true
+              testRunTitle: 'LLM-E2E $(System.JobPositionInPhase)/$(System.TotalJobsInPhase)'
+              publishRunAttachments: true
+              failTaskOnFailedTests: true
+
+          - publish: '$(resultDir)'
+            artifact: 'e2e-evidence-$(System.JobPositionInPhase)'
+            displayName: 'Belege archivieren'
+            condition: succeededOrFailed()

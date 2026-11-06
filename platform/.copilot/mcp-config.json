@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "local",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--isolated",
+        "--no-sandbox",
+        "--browser",
+        "chromium",
+        "--output-dir",
+        "${E2E_EVIDENCE_DIR}",
+        "--secrets",
+        "${E2E_SECRETS_FILE}",
+        "--viewport-size",
+        "1440,900"
+      ],
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}
