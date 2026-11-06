@@ -75,23 +75,6 @@ for ($attempt = 1; $attempt -le $attempts; $attempt++) {
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $timedOut  = $false
 
-    # $proc = Start-Process -FilePath 'copilot' -PassThru -NoNewWindow `
-    #     -ArgumentList @(
-    #         '--prompt', $prompt
-    #         '--allow-all-tools'
-    #         '--mcp-config', $McpConfig
-    #         '--add-dir', $evidenceDir
-    #         '--log-dir', $logDir
-    #         '--no-color'
-    #     ) `
-    #     -RedirectStandardOutput $stdoutFile `
-    #     -RedirectStandardError  $stderrFile
-
-    # if (-not $proc.WaitForExit($spec.timeoutSec * 1000)) {
-    #     $timedOut = $true
-    #     try { $proc.Kill($true) } catch { }
-    #     $proc.WaitForExit(10000) | Out-Null
-    # }
     $mcpConfigFile = (Resolve-Path -LiteralPath (
         Join-Path $McpConfig 'mcp-config.json'
     )).Path
