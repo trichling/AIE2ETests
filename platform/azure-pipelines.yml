@@ -34,7 +34,7 @@ stages:
             inputs:
               version: '10.x'
 
-          - script: npm install -g @github/copilot@latest
+          - script: npm install -g @github/copilot@1.0.114
             displayName: 'Copilot CLI installieren'
 
           # Playwright-Version wird aus der Abhängigkeit von @playwright/mcp@latest
